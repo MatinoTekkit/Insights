@@ -5,25 +5,25 @@ import java.nio.file.Files
 plugins {
     `java-library`
     `maven-publish`
-    id("com.github.johnrengelman.shadow") version VersionConstants.shadowVersion
-    id("io.papermc.paperweight.userdev") version VersionConstants.userdevVersion apply false
+    alias(libs.plugins.shadow)
+    alias(libs.plugins.userdev) apply false
 }
 
 val name = "Insights"
 group = "dev.frankheijden.insights"
 val dependencyDir = "$group.dependencies"
-version = "6.16.2-SNAPSHOT"
+version = "6.19.3"
 
 subprojects {
     apply(plugin = "java")
     apply(plugin = "checkstyle")
-    apply(plugin = "com.github.johnrengelman.shadow")
+    apply(plugin = "com.gradleup.shadow")
 
     version = rootProject.version
 
     val groupParts = project.name.split('-').drop(1)
     val nms = groupParts.isNotEmpty() && groupParts.first() == "NMS"
-    val nmsImpl = nms && groupParts.last().startsWith("v")
+    val nmsImpl = nms && groupParts.last() != "Core"
     if (nmsImpl) {
         apply(plugin = "io.papermc.paperweight.userdev")
     }
@@ -50,24 +50,25 @@ subprojects {
         maven("https://libraries.minecraft.net")
     }
 
+    val libs = rootProject.libs
     dependencies {
-        compileOnly("io.papermc.paper:paper-api:${VersionConstants.minecraftVersion}")
-        implementation("com.github.FrankHeijden:MinecraftReflection:${VersionConstants.minecraftReflectionVersion}")
-        implementation("io.papermc:paperlib:${VersionConstants.paperLibVersion}")
-        implementation("org.bstats:bstats-bukkit:${VersionConstants.bStatsVersion}")
-        implementation("net.kyori:adventure-api:${VersionConstants.adventureVersion}")
-        implementation("net.kyori:adventure-platform-bukkit:${VersionConstants.adventurePlatformVersion}")
-        implementation("net.kyori:adventure-text-minimessage:${VersionConstants.adventureVersion}")
+        compileOnly(libs.paperApi)
+        implementation(libs.paperLib)
+        implementation(libs.bStatsBukkit)
+        implementation(libs.adventureApi)
+        implementation(libs.adventureMiniMessage)
+        implementation(libs.adventurePlatformBukkit)
+
         if (!nms || nmsImpl) {
             compileOnly(project(":Insights-NMS-Core"))
         }
 
-        testImplementation("io.papermc.paper:paper-api:${VersionConstants.minecraftVersion}")
-        testImplementation("org.assertj:assertj-core:${VersionConstants.assertjVersion}")
-        testImplementation("org.mockito:mockito-core:${VersionConstants.mockitoVersion}")
-        testImplementation("org.junit.jupiter:junit-jupiter-api:${VersionConstants.jupiterVersion}")
-        testImplementation("org.junit.jupiter:junit-jupiter-params:${VersionConstants.jupiterVersion}")
-        testImplementation("org.junit.jupiter:junit-jupiter-engine:${VersionConstants.jupiterVersion}")
+        testImplementation(libs.paperApi)
+        testImplementation(libs.assertj)
+        testImplementation(libs.mockitoCore)
+        testImplementation(libs.jupiterApi)
+        testImplementation(libs.jupiterParams)
+        testImplementation(libs.jupiterEngine)
     }
 
     tasks {
@@ -78,8 +79,8 @@ subprojects {
         compileJava {
             options.encoding = Charsets.UTF_8.name()
             options.isDeprecation = true
-            sourceCompatibility = JavaVersion.VERSION_17.majorVersion
-            targetCompatibility = JavaVersion.VERSION_17.majorVersion
+            sourceCompatibility = JavaVersion.VERSION_21.majorVersion
+            targetCompatibility = JavaVersion.VERSION_21.majorVersion
         }
 
         javadoc {
@@ -108,6 +109,7 @@ subprojects {
         relocate("org.bstats", "$dependencyDir.bstats")
         relocate("net.kyori.adventure", "$dependencyDir.adventure")
         relocate("net.kyori.examination", "$dependencyDir.examination")
+        relocate("net.kyori.option", "$dependencyDir.option")
         if (nmsImpl) {
             relocate(project.group.toString().replaceAfterLast('.', "impl"), project.group.toString())
         }
@@ -124,9 +126,7 @@ dependencies {
     implementation(project(":Insights", "shadow"))
     Files
         .list(rootProject.projectDir.toPath().resolve("Insights-NMS"))
-        .filter {
-            !it.fileName.toString().startsWith(".")
-        }
+        .filter { !it.fileName.toString().startsWith(".") }
         .forEach {
             val configuration = if (it.fileName.toString() == "Core") "shadow" else "reobf"
             implementation(project(":Insights-NMS-${it.fileName}", configuration))
@@ -156,6 +156,12 @@ tasks.register<Copy>("copyJars") {
     rename("(.+)Parent(.+)-all(.+)", "$1$2$3")
 }
 
+buildscript {
+    dependencies {
+        classpath("io.github.z4kn4fein:semver:2.0.0")
+    }
+}
+
 val artifactFile: File = tasks.shadowJar.get().archiveFile.get().asFile
 val artifact: PublishArtifact = artifacts.add("archives", artifactFile) {
     type = "jar"
@@ -164,6 +170,22 @@ val artifact: PublishArtifact = artifacts.add("archives", artifactFile) {
     version = rootProject.version
     classifier = ""
     builtBy("shadowJar")
+}
+
+fun Project.isRelease(): Boolean {
+    return version.toString().toVersion().preRelease == null
+}
+
+task("printIsRelease") {
+    doLast {
+        println(isRelease())
+    }
+}
+
+task("printVersion") {
+    doLast {
+        println(version.toString())
+    }
 }
 
 publishing {

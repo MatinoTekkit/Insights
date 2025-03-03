@@ -1,12 +1,7 @@
 package dev.frankheijden.insights;
 
-import cloud.commandframework.annotations.AnnotationParser;
-import cloud.commandframework.arguments.parser.ParserRegistry;
-import cloud.commandframework.brigadier.CloudBrigadierManager;
-import cloud.commandframework.bukkit.CloudBukkitCapabilities;
-import cloud.commandframework.execution.AsynchronousCommandExecutionCoordinator;
-import cloud.commandframework.meta.SimpleCommandMeta;
-import cloud.commandframework.paper.PaperCommandManager;
+import com.github.zafarkhaja.semver.Version;
+import com.mojang.brigadier.arguments.StringArgumentType;
 import dev.frankheijden.insights.api.InsightsPlugin;
 import dev.frankheijden.insights.api.addons.AddonManager;
 import dev.frankheijden.insights.api.concurrent.ChunkContainerExecutor;
@@ -36,17 +31,15 @@ import dev.frankheijden.insights.commands.CommandScanHistory;
 import dev.frankheijden.insights.commands.CommandScanRegion;
 import dev.frankheijden.insights.commands.CommandScanWorld;
 import dev.frankheijden.insights.commands.CommandTeleportChunk;
-import dev.frankheijden.insights.commands.brigadier.BrigadierHandler;
-import dev.frankheijden.insights.commands.parser.LimitArgument;
-import dev.frankheijden.insights.commands.parser.ScanHistoryPageArgument;
-import dev.frankheijden.insights.commands.parser.ScanObjectArrayArgument;
-import dev.frankheijden.insights.commands.parser.WorldArgument;
+import dev.frankheijden.insights.commands.parser.LimitParser;
+import dev.frankheijden.insights.commands.parser.ScanHistoryPageParser;
+import dev.frankheijden.insights.commands.parser.ScanObjectArrayParser;
+import dev.frankheijden.insights.commands.parser.WorldParser;
+import dev.frankheijden.insights.commands.util.CommandSenderMapper;
 import dev.frankheijden.insights.concurrent.ContainerExecutorService;
 import dev.frankheijden.insights.listeners.manager.ListenerManager;
 import dev.frankheijden.insights.nms.core.InsightsNMS;
-import dev.frankheijden.insights.nms.core.InsightsNMSVersion;
 import dev.frankheijden.insights.placeholders.InsightsPlaceholderExpansion;
-import dev.frankheijden.insights.tasks.EntityTrackerTask;
 import dev.frankheijden.insights.tasks.PlayerTrackerTask;
 import io.leangen.geantyref.TypeToken;
 import io.papermc.lib.PaperLib;
@@ -55,6 +48,9 @@ import org.bukkit.Bukkit;
 import org.bukkit.World;
 import org.bukkit.command.CommandSender;
 import org.bukkit.scheduler.BukkitTask;
+import org.incendo.cloud.annotations.AnnotationParser;
+import org.incendo.cloud.execution.ExecutionCoordinator;
+import org.incendo.cloud.paper.PaperCommandManager;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.DirectoryStream;
@@ -62,10 +58,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Locale;
-import java.util.Optional;
-import java.util.function.Function;
 
 public class Insights extends InsightsPlugin {
+
+    private static final Version minimumCompatibleVersion = Version.of(1, 20, 6);
 
     private static final String SETTINGS_FILE_NAME = "config.yml";
     private static final String MESSAGES_FILE_NAME = "messages.yml";
@@ -83,7 +79,6 @@ public class Insights extends InsightsPlugin {
     private AddonStorage addonStorage;
     private WorldChunkScanTracker worldChunkScanTracker;
     private AddonScanTracker addonScanTracker;
-    private EntityTrackerTask entityTrackerTask;
     private MetricsManager metricsManager;
     private ScanHistory scanHistory;
     private ListenerManager listenerManager;
@@ -105,28 +100,11 @@ public class Insights extends InsightsPlugin {
     public void onEnable() {
         super.onEnable();
 
-        String[] split = Bukkit.getMinecraftVersion().split("\\.");
-        int minor = Integer.parseInt(split[1]);
-        int patch = Integer.parseInt(split[2]);
-
-        if (!PaperLib.isPaper()) {
-            throw new RuntimeException("Insights is incompatible with your server version");
+        if (isIncompatible()) {
+            throw new RuntimeException("Insights is incompatible with your server version, "
+                    + "we require a Paper backend and a Minecraft version of at least " + minimumCompatibleVersion);
         }
-        nms = switch (minor) {
-            case 19 -> switch (patch) {
-                case 1 -> InsightsNMS.get(InsightsNMSVersion.v1_19_1_R1);
-                case 2 -> InsightsNMS.get(InsightsNMSVersion.v1_19_2_R1);
-                case 3 -> InsightsNMS.get(InsightsNMSVersion.v1_19_3_R2);
-                case 4 -> InsightsNMS.get(InsightsNMSVersion.v1_19_4_R3);
-                default -> throw new RuntimeException("Insights is incompatible with your server version");
-            };
-            case 20 -> switch (patch) {
-                case 1 -> InsightsNMS.get(InsightsNMSVersion.v1_20_R1);
-                case 2 -> InsightsNMS.get(InsightsNMSVersion.v1_20_R2);
-                default -> throw new RuntimeException("Insights is incompatible with your server version");
-            };
-            default -> throw new RuntimeException("Insights is incompatible with your server version");
-        };
+        nms = InsightsNMS.get();
 
         this.audiences = BukkitAudiences.create(this);
         this.listenerManager = new ListenerManager(this);
@@ -165,17 +143,18 @@ public class Insights extends InsightsPlugin {
 
         loadCommands();
 
-        if (!PaperLib.isPaper()) {
-            entityTrackerTask = new EntityTrackerTask(this);
-            var interval = settings.SPIGOT_ENTITY_TRACKER_INTERVAL_TICKS;
-            Bukkit.getScheduler().runTaskTimer(this, entityTrackerTask, 0, interval);
-        }
-
         reload();
+    }
+
+    private static boolean isIncompatible() {
+        var minecraftVersion = Version.parse(Bukkit.getServer().getMinecraftVersion(), false);
+        return !PaperLib.isPaper() || minecraftVersion.compareTo(minimumCompatibleVersion) < 0;
     }
 
     @Override
     public void onDisable() {
+        if (isIncompatible()) return;
+
         listenerManager.unregister();
         redstoneUpdateCount.stop();
         notifications.clearNotifications();
@@ -205,10 +184,6 @@ public class Insights extends InsightsPlugin {
     @Override
     public InsightsNMS getNMS() {
         return nms;
-    }
-
-    public Optional<EntityTrackerTask> getEntityTracker() {
-        return Optional.ofNullable(entityTrackerTask);
     }
 
     @Override
@@ -276,62 +251,45 @@ public class Insights extends InsightsPlugin {
     }
 
     private void loadCommands() {
-        PaperCommandManager<CommandSender> commandManager;
-        try {
-            commandManager = new PaperCommandManager<>(
-                    this,
-                    AsynchronousCommandExecutionCoordinator.<CommandSender>newBuilder().build(),
-                    Function.identity(),
-                    Function.identity()
-            );
-        } catch (Exception ex) {
-            ex.printStackTrace();
-            return;
-        }
+        var commandManager = PaperCommandManager.builder(new CommandSenderMapper())
+                .executionCoordinator(ExecutionCoordinator.asyncCoordinator())
+                .buildOnEnable(this);
 
         // Register parsers
-        ParserRegistry<CommandSender> parserRegistry = commandManager.parserRegistry();
+        var parserRegistry = commandManager.parserRegistry();
         parserRegistry.registerParserSupplier(
                 TypeToken.get(new TypeToken<Limit>() {
                 }.getType()),
-                options -> new LimitArgument.LimitParser()
+                LimitParser::new
         );
         parserRegistry.registerParserSupplier(
                 TypeToken.get(new TypeToken<ScanObject<?>[]>() {
                 }.getType()),
-                options -> new ScanObjectArrayArgument.ScanObjectArrayParser()
+                ScanObjectArrayParser::new
         );
         parserRegistry.registerParserSupplier(
                 TypeToken.get(new TypeToken<CommandScanHistory.Page>() {
                 }.getType()),
-                options -> new ScanHistoryPageArgument.ScanHistoryPageParser()
+                ScanHistoryPageParser::new
         );
         parserRegistry.registerParserSupplier(
                 TypeToken.get(new TypeToken<World>() {
                 }.getType()),
-                options -> new WorldArgument.WorldParser()
+                WorldParser::new
         );
 
-        // Register capabilities if allowed
-        boolean hasBrigadier = commandManager.hasCapability(CloudBukkitCapabilities.BRIGADIER);
-        boolean hasNativeBrigadier = commandManager.hasCapability(CloudBukkitCapabilities.NATIVE_BRIGADIER);
-        boolean hasCommodoreBrigadier = commandManager.hasCapability(CloudBukkitCapabilities.COMMODORE_BRIGADIER);
-        if (hasBrigadier && (hasNativeBrigadier || hasCommodoreBrigadier)) {
-            commandManager.registerBrigadier();
-            CloudBrigadierManager<CommandSender, ?> brigadierManager = commandManager.brigadierManager();
-            var handler = new BrigadierHandler(brigadierManager);
-            handler.registerTypes();
-        }
-        if (commandManager.hasCapability(CloudBukkitCapabilities.ASYNCHRONOUS_COMPLETION)) {
-            commandManager.registerAsynchronousCompletions();
+        if (commandManager.hasBrigadierManager()) {
+            commandManager.brigadierManager().registerMapping(
+                    new TypeToken<ScanObjectArrayParser<CommandSender>>() {},
+                    builder -> {
+                        builder.to(argument -> StringArgumentType.greedyString());
+                        builder.cloudSuggestions();
+                    }
+            );
         }
 
         // Create Annotation Parser
-        AnnotationParser<CommandSender> annotationParser = new AnnotationParser<>(
-                commandManager,
-                CommandSender.class,
-                parameters -> SimpleCommandMeta.empty()
-        );
+        var annotationParser = new AnnotationParser(commandManager, CommandSender.class);
 
         // Parse commands
         annotationParser.parse(new CommandInsights(this));
