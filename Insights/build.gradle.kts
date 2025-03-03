@@ -11,6 +11,10 @@ repositories {
     maven("https://repo.extendedclip.com/content/repositories/placeholderapi/")
 }
 
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(21)
+}
+
 dependencies {
     compileOnly(libs.brigadier)
     compileOnly(libs.placeholderapi)
